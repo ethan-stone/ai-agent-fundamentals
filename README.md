@@ -8,6 +8,12 @@ This repo contains a minimal Bedrock-backed REPL agent for learning core AI agen
 bun install
 ```
 
+## Test
+
+```bash
+bun test
+```
+
 ## Local Env Setup
 
 This repo requires local runtime configuration in a repo-level `.env` file. Bun loads this automatically when you run scripts.
@@ -72,6 +78,10 @@ The agent exposes these local tools:
 - `getWorkingDirectory` for the workspace root.
 - `listDirectory` for inspecting repo structure.
 - `readTextFile` for reading small text files in the workspace.
+- `readFileChunk` for inspecting larger files in smaller pieces.
+- `searchFiles` for searching file contents or file names inside the workspace.
+
+The tool layer is covered by tests for schema validation, coercion, and `defineTool` behavior.
 
 ## REPL Commands
 

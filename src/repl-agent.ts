@@ -12,6 +12,20 @@ import { access, appendFile, mkdir, readdir, readFile, stat } from "node:fs/prom
 import { join, relative, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { z } from "zod";
+import {
+  MAX_FILE_CHUNK_CHARACTERS,
+  MAX_SEARCH_RESULTS,
+  emptyInputSchema,
+  listDirectoryInputSchema,
+  readFileChunkInputSchema,
+  readTextFileInputSchema,
+  runtimeConfigSchema,
+  searchFilesInputSchema,
+} from "./agent-schemas";
+import { defineTool, parseWithSchema, type ToolDefinition } from "./tooling";
 
 const WORKSPACE_ROOT = process.cwd();
 const TRACE_DIR = resolve(WORKSPACE_ROOT, "traces");
@@ -23,6 +37,7 @@ const SYSTEM_PROMPT =
 Use tools when they would improve accuracy.
 When answering questions about local files, prefer inspecting the workspace instead of guessing.
 Be concise, explicit about assumptions, and focus on the next useful step.`;
+const execFileAsync = promisify(execFile);
 
 type RuntimeConfig = {
   modelId: string;
@@ -30,21 +45,6 @@ type RuntimeConfig = {
   awsRegion: string;
   maxAgentIterations: number;
 };
-
-function getOptionalEnvironmentValue(name: string): string | undefined {
-  const value = process.env[name]?.trim();
-  return value ? value : undefined;
-}
-
-function getRequiredEnvironmentValue(name: string): string {
-  const value = getOptionalEnvironmentValue(name);
-
-  if (!value) {
-    throw new Error(`${name} is required. Set it in the repo .env file or your environment.`);
-  }
-
-  return value;
-}
 
 async function assertLocalEnvFileExists(): Promise<void> {
   try {
@@ -54,113 +54,18 @@ async function assertLocalEnvFileExists(): Promise<void> {
   }
 }
 
-function getPositiveIntegerEnvironmentValue(name: string, fallback: number): number {
-  const rawValue = getOptionalEnvironmentValue(name);
-
-  if (!rawValue) {
-    if (Number.isNaN(fallback)) {
-      throw new Error(`${name} is required. Set it in the repo .env file or your environment.`);
-    }
-
-    return fallback;
-  }
-
-  const parsedValue = Number.parseInt(rawValue, 10);
-
-  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
-    throw new Error(`${name} must be a positive integer. Received: ${rawValue}`);
-  }
-
-  return parsedValue;
-}
-
 function getRuntimeConfig(): RuntimeConfig {
-  const awsRegion =
-    getOptionalEnvironmentValue("AWS_REGION")
-    ?? getOptionalEnvironmentValue("AWS_DEFAULT_REGION");
-
-  if (!awsRegion) {
-    throw new Error("AWS_REGION is required. Set it in the repo .env file or your environment.");
-  }
+  const parsedConfig = parseWithSchema(runtimeConfigSchema, process.env, "Runtime config");
 
   return {
-    modelId: getRequiredEnvironmentValue("AGENT_MODEL_ID"),
-    awsProfile: getRequiredEnvironmentValue("AWS_PROFILE"),
-    awsRegion,
-    maxAgentIterations: getPositiveIntegerEnvironmentValue(
-      "MAX_AGENT_ITERATIONS",
-      Number.NaN,
-    ),
+    modelId: parsedConfig.AGENT_MODEL_ID,
+    awsProfile: parsedConfig.AWS_PROFILE,
+    awsRegion: parsedConfig.AWS_REGION ?? parsedConfig.AWS_DEFAULT_REGION!,
+    maxAgentIterations: parsedConfig.MAX_AGENT_ITERATIONS,
   };
 }
 
 const runtimeConfig = getRuntimeConfig();
-const TOOLS: Tool[] = [
-  {
-    toolSpec: {
-      name: "getCurrentDateTime",
-      description: "Returns the current local date and time for this runtime.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
-      },
-    },
-  },
-  {
-    toolSpec: {
-      name: "getWorkingDirectory",
-      description: "Returns the current workspace root for this agent process.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {},
-          additionalProperties: false,
-        },
-      },
-    },
-  },
-  {
-    toolSpec: {
-      name: "listDirectory",
-      description:
-        "Lists files and directories within the workspace. Use this to explore the repo structure.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "Optional relative path inside the workspace. Defaults to the workspace root.",
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-    },
-  },
-  {
-    toolSpec: {
-      name: "readTextFile",
-      description: "Reads a UTF-8 text file from the workspace and returns its contents.",
-      inputSchema: {
-        json: {
-          type: "object",
-          properties: {
-            path: {
-              type: "string",
-              description: "Relative path to a text file inside the workspace.",
-            },
-          },
-          required: ["path"],
-          additionalProperties: false,
-        },
-      },
-    },
-  },
-];
 
 const client = new BedrockRuntimeClient({
   region: runtimeConfig.awsRegion,
@@ -271,11 +176,6 @@ function getToolInput(toolUse: ToolUseBlock): Record<string, unknown> {
   return input as Record<string, unknown>;
 }
 
-function getOptionalString(input: Record<string, unknown>, key: string): string | undefined {
-  const value = input[key];
-  return typeof value === "string" ? value : undefined;
-}
-
 function resolveWorkspacePath(target = "."): string {
   const resolvedPath = resolve(WORKSPACE_ROOT, target);
   const relativePath = relative(WORKSPACE_ROOT, resolvedPath);
@@ -323,8 +223,8 @@ async function getWorkingDirectory() {
   };
 }
 
-async function listDirectory(input: Record<string, unknown>) {
-  const requestedPath = getOptionalString(input, "path") ?? ".";
+async function listDirectory(input: z.infer<typeof listDirectoryInputSchema>) {
+  const requestedPath = input.path ?? ".";
   const resolvedPath = resolveWorkspacePath(requestedPath);
   const entries = await readdir(resolvedPath, { withFileTypes: true });
 
@@ -337,14 +237,8 @@ async function listDirectory(input: Record<string, unknown>) {
   };
 }
 
-async function readTextFileTool(input: Record<string, unknown>) {
-  const path = getOptionalString(input, "path");
-
-  if (!path) {
-    throw new Error("readTextFile requires a string 'path' input.");
-  }
-
-  const resolvedPath = resolveWorkspacePath(path);
+async function readTextFileTool(input: z.infer<typeof readTextFileInputSchema>) {
+  const resolvedPath = resolveWorkspacePath(input.path);
   const fileStats = await stat(resolvedPath);
 
   if (!fileStats.isFile()) {
@@ -362,21 +256,159 @@ async function readTextFileTool(input: Record<string, unknown>) {
   };
 }
 
+async function readFileChunk(input: z.infer<typeof readFileChunkInputSchema>) {
+  const resolvedPath = resolveWorkspacePath(input.path);
+  const fileStats = await stat(resolvedPath);
+
+  if (!fileStats.isFile()) {
+    throw new Error("Requested path is not a file.");
+  }
+
+  const safeMaxCharacters = Math.min(input.maxCharacters, MAX_FILE_CHUNK_CHARACTERS);
+  const fileContent = await readFile(resolvedPath, "utf8");
+  const content = fileContent.slice(input.offset, input.offset + safeMaxCharacters);
+
+  return {
+    path: relative(WORKSPACE_ROOT, resolvedPath),
+    offset: input.offset,
+    maxCharacters: safeMaxCharacters,
+    returnedCharacters: content.length,
+    returnedBytes: Buffer.byteLength(content, "utf8"),
+    fileSizeBytes: fileStats.size,
+    hasMore: input.offset + content.length < fileContent.length,
+    content,
+  };
+}
+
+async function searchFiles(input: z.infer<typeof searchFilesInputSchema>) {
+  const resolvedPath = resolveWorkspacePath(input.path ?? ".");
+
+  const args = input.searchType === "content"
+    ? ["--json", "--smart-case", "--max-count", String(input.limit), input.query, resolvedPath]
+    : ["--files", resolvedPath];
+  let stdout = "";
+
+  try {
+    ({ stdout } = await execFileAsync("rg", args, { cwd: WORKSPACE_ROOT, maxBuffer: 1024 * 1024 }));
+  } catch (error) {
+    const details = error as { code?: number; stdout?: string };
+
+    if (details.code === 1) {
+      stdout = details.stdout ?? "";
+    } else {
+      throw new Error("searchFiles requires 'rg' (ripgrep) to be installed and available on PATH.");
+    }
+  }
+
+  if (input.searchType === "fileName") {
+    const matchedPaths = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => line.toLowerCase().includes(input.query.toLowerCase()))
+      .slice(0, input.limit)
+      .map((line) => relative(WORKSPACE_ROOT, line));
+
+    return {
+      query: input.query,
+      searchType: input.searchType,
+      path: relative(WORKSPACE_ROOT, resolvedPath) || ".",
+      results: matchedPaths.map((matchedPath) => ({ path: matchedPath })),
+      resultCount: matchedPaths.length,
+    };
+  }
+
+  const results = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parsedLine = JSON.parse(line) as Record<string, unknown>;
+      return parsedLine;
+    })
+    .filter((event) => event.type === "match")
+    .slice(0, input.limit)
+    .map((event) => {
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      const pathData = (data.path ?? {}) as Record<string, unknown>;
+      const lineNumber = data.line_number;
+      const lines = (data.lines ?? {}) as Record<string, unknown>;
+
+      return {
+        path: relative(WORKSPACE_ROOT, String(pathData.text ?? "")),
+        lineNumber: typeof lineNumber === "number" ? lineNumber : null,
+        preview: String(lines.text ?? "").trimEnd(),
+      };
+    });
+
+  return {
+    query: input.query,
+    searchType: input.searchType,
+    path: relative(WORKSPACE_ROOT, resolvedPath) || ".",
+    results,
+    resultCount: results.length,
+  };
+}
+
+const TOOL_DEFINITIONS: ToolDefinition[] = [
+  defineTool({
+    name: "getCurrentDateTime",
+    description: "Returns the current local date and time for this runtime.",
+    schema: emptyInputSchema,
+    handler: () => getCurrentDateTime(),
+  }),
+  defineTool({
+    name: "getWorkingDirectory",
+    description: "Returns the current workspace root for this agent process.",
+    schema: emptyInputSchema,
+    handler: () => getWorkingDirectory(),
+  }),
+  defineTool({
+    name: "listDirectory",
+    description: "Lists files and directories within the workspace. Use this to explore the repo structure.",
+    schema: listDirectoryInputSchema,
+    handler: (input) => listDirectory(input),
+  }),
+  defineTool({
+    name: "readTextFile",
+    description: "Reads a UTF-8 text file from the workspace and returns its contents.",
+    schema: readTextFileInputSchema,
+    handler: (input) => readTextFileTool(input),
+  }),
+  defineTool({
+    name: "readFileChunk",
+    description: "Reads part of a UTF-8 text file so larger files can be inspected incrementally.",
+    schema: readFileChunkInputSchema,
+    handler: (input) => readFileChunk(input),
+  }),
+  defineTool({
+    name: "searchFiles",
+    description: "Searches file contents or file names within the workspace using ripgrep.",
+    schema: searchFilesInputSchema,
+    handler: (input) => searchFiles(input),
+  }),
+];
+
+const TOOLS = TOOL_DEFINITIONS.map((definition) => definition.tool);
+const TOOL_HANDLERS = new Map<string, ToolDefinition["handler"]>(
+  TOOL_DEFINITIONS.map((definition) => [definition.tool.toolSpec?.name ?? "", definition.handler]),
+);
+
 async function executeTool(toolUse: ToolUseBlock): Promise<string> {
   const input = getToolInput(toolUse);
+  const toolName = toolUse.name;
 
-  switch (toolUse.name) {
-    case "getCurrentDateTime":
-      return JSON.stringify(getCurrentDateTime(), null, 2);
-    case "getWorkingDirectory":
-      return JSON.stringify(await getWorkingDirectory(), null, 2);
-    case "listDirectory":
-      return JSON.stringify(await listDirectory(input), null, 2);
-    case "readTextFile":
-      return JSON.stringify(await readTextFileTool(input), null, 2);
-    default:
-      throw new Error(`Unsupported tool requested: ${toolUse.name}`);
+  if (!toolName) {
+    throw new Error("Tool request did not include a tool name.");
   }
+
+  const handler = TOOL_HANDLERS.get(toolName);
+
+  if (!handler) {
+    throw new Error(`Unsupported tool requested: ${toolName}`);
+  }
+
+  return JSON.stringify(await handler(input), null, 2);
 }
 
 function createToolResultMessage(toolUseId: string, result: string): Message {
@@ -396,157 +428,157 @@ function isToolUseBlock(block: ContentBlock): block is ContentBlock & { toolUse:
 }
 
 async function runModelTurn(messages: Message[], traceWriter: TraceWriter): Promise<string> {
-    for (let iteration = 0; iteration < runtimeConfig.maxAgentIterations; iteration += 1) {
-      const response = await sendConversation(messages);
-      const assistantMessage = response.output?.message;
+  for (let iteration = 0; iteration < runtimeConfig.maxAgentIterations; iteration += 1) {
+    const response = await sendConversation(messages);
+    const assistantMessage = response.output?.message;
 
-      if (!assistantMessage || assistantMessage.role !== "assistant") {
-        throw new Error("Bedrock did not return an assistant message.");
-      }
-
-      messages.push(assistantMessage);
-      await traceWriter.logEvent({
-        type: "model_response",
-        iteration: iteration + 1,
-        data: {
-          stopReason: response.stopReason ?? "unknown",
-          content: summarizeContentBlocks(assistantMessage.content),
-        },
-      });
-
-      if (response.stopReason !== "tool_use") {
-        const assistantText = getTextFromContent(assistantMessage.content);
-        await traceWriter.logEvent({
-          type: "assistant_message",
-          iteration: iteration + 1,
-          data: {
-            text: truncateForTrace(assistantText),
-          },
-        });
-        return assistantText;
-      }
-
-      const toolUseBlocks = (assistantMessage.content ?? []).filter(isToolUseBlock);
-
-      if (toolUseBlocks.length === 0) {
-        throw new Error("Bedrock indicated tool use, but no tool requests were returned.");
-      }
-
-      for (const block of toolUseBlocks) {
-        const toolUse = block.toolUse;
-
-        if (!toolUse.toolUseId) {
-          throw new Error("Tool request did not include a toolUseId.");
-        }
-
-        const toolInput = getToolInput(toolUse);
-        console.log(`\n[tool] ${toolUse.name}(${JSON.stringify(toolInput)})`);
-        await traceWriter.logEvent({
-          type: "tool_request",
-          iteration: iteration + 1,
-          data: {
-            name: toolUse.name,
-            toolUseId: toolUse.toolUseId,
-            input: toolInput,
-          },
-        });
-
-        const result = await executeTool(toolUse);
-        console.log(`[tool-result] ${truncateForTrace(result)}`);
-        await traceWriter.logEvent({
-          type: "tool_result",
-          iteration: iteration + 1,
-          data: {
-            name: toolUse.name,
-            toolUseId: toolUse.toolUseId,
-            result: truncateForTrace(result),
-          },
-        });
-        messages.push(createToolResultMessage(toolUse.toolUseId, result));
-      }
+    if (!assistantMessage || assistantMessage.role !== "assistant") {
+      throw new Error("Bedrock did not return an assistant message.");
     }
 
-    throw new Error(`Agent exceeded the max tool loop count of ${runtimeConfig.maxAgentIterations}.`);
-  }
-
-  async function main() {
-    await assertLocalEnvFileExists();
-
-    const rl = createInterface({ input, output });
-    const messages: Message[] = [];
-    const traceWriter = await createTraceWriter();
-
-    console.log(`Model: ${runtimeConfig.modelId}`);
-    console.log(`AWS profile: ${runtimeConfig.awsProfile}`);
-    console.log(`AWS region: ${runtimeConfig.awsRegion}`);
-    console.log(`Env file: ${ENV_FILE_PATH}`);
-    console.log(`Workspace: ${WORKSPACE_ROOT}`);
-    console.log(`Trace file: ${traceWriter.filePath}`);
-    console.log("Commands: /exit, /clear");
+    messages.push(assistantMessage);
     await traceWriter.logEvent({
-      type: "session_started",
+      type: "model_response",
+      iteration: iteration + 1,
       data: {
-        modelId: runtimeConfig.modelId,
-        awsProfile: runtimeConfig.awsProfile,
-        awsRegion: runtimeConfig.awsRegion,
-        envFile: ENV_FILE_PATH,
-        workspaceRoot: WORKSPACE_ROOT,
-        traceFile: traceWriter.filePath,
+        stopReason: response.stopReason ?? "unknown",
+        content: summarizeContentBlocks(assistantMessage.content),
       },
     });
 
-    try {
-      while (true) {
-        const userInput = (await rl.question("\nYou: ")).trim();
+    if (response.stopReason !== "tool_use") {
+      const assistantText = getTextFromContent(assistantMessage.content);
+      await traceWriter.logEvent({
+        type: "assistant_message",
+        iteration: iteration + 1,
+        data: {
+          text: truncateForTrace(assistantText),
+        },
+      });
+      return assistantText;
+    }
 
-        if (!userInput) {
-          continue;
-        }
+    const toolUseBlocks = (assistantMessage.content ?? []).filter(isToolUseBlock);
 
-        if (userInput === "/exit") {
-          break;
-        }
+    if (toolUseBlocks.length === 0) {
+      throw new Error("Bedrock indicated tool use, but no tool requests were returned.");
+    }
 
-        if (userInput === "/clear") {
-          messages.length = 0;
-          console.log("Conversation cleared.");
-          await traceWriter.logEvent({
-            type: "conversation_cleared",
-            data: {},
-          });
-          continue;
-        }
+    for (const block of toolUseBlocks) {
+      const toolUse = block.toolUse;
 
-        messages.push(createUserMessage(userInput));
-        await traceWriter.logEvent({
-          type: "user_message",
-          data: {
-            text: truncateForTrace(userInput),
-          },
-        });
-
-        try {
-          const assistantText = await runModelTurn(messages, traceWriter);
-          console.log(`\nAssistant: ${assistantText || "[No text content returned]"}`);
-        } catch (error) {
-          messages.pop();
-          await traceWriter.logEvent({
-            type: "error",
-            data: {
-              message: error instanceof Error ? error.message : String(error),
-            },
-          });
-          throw error;
-        }
+      if (!toolUse.toolUseId) {
+        throw new Error("Tool request did not include a toolUseId.");
       }
-    } finally {
-      rl.close();
+
+      const toolInput = getToolInput(toolUse);
+      console.log(`\n[tool] ${toolUse.name}(${JSON.stringify(toolInput)})`);
+      await traceWriter.logEvent({
+        type: "tool_request",
+        iteration: iteration + 1,
+        data: {
+          name: toolUse.name,
+          toolUseId: toolUse.toolUseId,
+          input: toolInput,
+        },
+      });
+
+      const result = await executeTool(toolUse);
+      console.log(`[tool-result] ${truncateForTrace(result)}`);
+      await traceWriter.logEvent({
+        type: "tool_result",
+        iteration: iteration + 1,
+        data: {
+          name: toolUse.name,
+          toolUseId: toolUse.toolUseId,
+          result: truncateForTrace(result),
+        },
+      });
+      messages.push(createToolResultMessage(toolUse.toolUseId, result));
     }
   }
 
-  main().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`\nAgent loop failed: ${message}`);
-    console.error("Check .env, AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION, AGENT_MODEL_ID, and MAX_AGENT_ITERATIONS.");
-    process.exitCode = 1;
+  throw new Error(`Agent exceeded the max tool loop count of ${runtimeConfig.maxAgentIterations}.`);
+}
+
+async function main() {
+  await assertLocalEnvFileExists();
+
+  const rl = createInterface({ input, output });
+  const messages: Message[] = [];
+  const traceWriter = await createTraceWriter();
+
+  console.log(`Model: ${runtimeConfig.modelId}`);
+  console.log(`AWS profile: ${runtimeConfig.awsProfile}`);
+  console.log(`AWS region: ${runtimeConfig.awsRegion}`);
+  console.log(`Env file: ${ENV_FILE_PATH}`);
+  console.log(`Workspace: ${WORKSPACE_ROOT}`);
+  console.log(`Trace file: ${traceWriter.filePath}`);
+  console.log("Commands: /exit, /clear");
+  await traceWriter.logEvent({
+    type: "session_started",
+    data: {
+      modelId: runtimeConfig.modelId,
+      awsProfile: runtimeConfig.awsProfile,
+      awsRegion: runtimeConfig.awsRegion,
+      envFile: ENV_FILE_PATH,
+      workspaceRoot: WORKSPACE_ROOT,
+      traceFile: traceWriter.filePath,
+    },
   });
+
+  try {
+    while (true) {
+      const userInput = (await rl.question("\nYou: ")).trim();
+
+      if (!userInput) {
+        continue;
+      }
+
+      if (userInput === "/exit") {
+        break;
+      }
+
+      if (userInput === "/clear") {
+        messages.length = 0;
+        console.log("Conversation cleared.");
+        await traceWriter.logEvent({
+          type: "conversation_cleared",
+          data: {},
+        });
+        continue;
+      }
+
+      messages.push(createUserMessage(userInput));
+      await traceWriter.logEvent({
+        type: "user_message",
+        data: {
+          text: truncateForTrace(userInput),
+        },
+      });
+
+      try {
+        const assistantText = await runModelTurn(messages, traceWriter);
+        console.log(`\nAssistant: ${assistantText || "[No text content returned]"}`);
+      } catch (error) {
+        messages.pop();
+        await traceWriter.logEvent({
+          type: "error",
+          data: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        });
+        throw error;
+      }
+    }
+  } finally {
+    rl.close();
+  }
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`\nAgent loop failed: ${message}`);
+  console.error("Check .env, AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION, AGENT_MODEL_ID, and MAX_AGENT_ITERATIONS.");
+  process.exitCode = 1;
+});

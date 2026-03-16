@@ -68,7 +68,7 @@ Make the current agent easy to run, easy to understand, and safe to extend.
 
 ## Phase 2: Expand the Tooling Surface
 
-Status: `Not Started`
+Status: `Completed`
 
 ### Goal
 
@@ -88,10 +88,10 @@ Teach how tool design affects agent performance, reliability, and safety.
 
 ### Suggested Tasks
 
-- [ ] Add `searchFiles` for filename or content discovery.
-- [ ] Add `readFileChunk` for reading larger files safely in pieces.
-- [ ] Refactor tool definitions and execution into a clearer structure.
-- [ ] Add tests or fixtures for tool input validation.
+- [x] Add `searchFiles` for filename or content discovery.
+- [x] Add `readFileChunk` for reading larger files safely in pieces.
+- [x] Refactor tool definitions and execution into a clearer structure.
+- [x] Add tests or fixtures for tool input validation.
 
 ### Exit Criteria
 
@@ -315,4 +315,5 @@ Use this section to record meaningful project milestones.
 | Date | Phase | Update |
 | --- | --- | --- |
 | 2026-03-15 | Baseline | Learning path created from current repo state. |
-| 2026-03-15 | Phase 1 | Baseline stabilized with env-based config, corrected docs, and a local validation command. |
+| 2026-03-15 | Phase 1 | Baseline stabilized with env-based config and corrected docs. |
+| 2026-03-15 | Phase 2 | Added schema-driven tools, search and chunked reads, and tests for tool validation boundaries. |
