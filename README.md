@@ -14,6 +14,28 @@ bun install
 bun test
 ```
 
+## Evals
+
+```bash
+bun run evals
+```
+
+This runs the benchmark prompts in `evals/tasks.json`, drives the current REPL agent, scores the resulting traces, and writes results under `evals/results/`.
+
+To compare models, run the same eval suite with different `AGENT_MODEL_ID` values. Each eval result records the model and region used for that run.
+
+Example:
+
+```bash
+AGENT_MODEL_ID=us.amazon.nova-2-lite-v1:0 bun run evals
+```
+
+To summarize patterns across saved eval runs:
+
+```bash
+bun run analyze-evals
+```
+
 ## Local Env Setup
 
 This repo requires local runtime configuration in a repo-level `.env` file. Bun loads this automatically when you run scripts.
@@ -82,6 +104,22 @@ The agent exposes these local tools:
 - `searchFiles` for searching file contents or file names inside the workspace.
 
 The tool layer is covered by tests for schema validation, coercion, and `defineTool` behavior.
+
+The evaluation layer scores tasks against a simple rubric:
+
+- required tools were used
+- no error event was emitted
+- the final assistant response matched an expected snippet
+- the run stayed within an iteration budget
+
+The eval analysis layer summarizes recurring failure patterns across runs, including:
+
+- infrastructure failures
+- missing required tool usage
+- answer mismatches
+- iteration-budget failures
+- most common failing tasks
+- breakdowns by model
 
 ## REPL Commands
 

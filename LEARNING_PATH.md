@@ -100,7 +100,7 @@ Teach how tool design affects agent performance, reliability, and safety.
 
 ## Phase 3: Add Safe Write Capabilities
 
-Status: `Not Started`
+Status: `Completed`
 
 ### Goal
 
@@ -152,10 +152,10 @@ Move from “demo works once” to “behavior is measurable.”
 
 ### Suggested Tasks
 
-- [ ] Create 5 to 10 benchmark tasks for the agent.
-- [ ] Define success criteria for each task.
-- [ ] Add a script to run the tasks and capture outcomes.
-- [ ] Summarize common failure patterns from trace data.
+- [x] Create 5 to 10 benchmark tasks for the agent.
+- [x] Define success criteria for each task.
+- [x] Add a script to run the tasks and capture outcomes.
+- [x] Summarize common failure patterns from trace data.
 
 ### Exit Criteria
 
@@ -317,3 +317,4 @@ Use this section to record meaningful project milestones.
 | 2026-03-15 | Baseline | Learning path created from current repo state. |
 | 2026-03-15 | Phase 1 | Baseline stabilized with env-based config and corrected docs. |
 | 2026-03-15 | Phase 2 | Added schema-driven tools, search and chunked reads, and tests for tool validation boundaries. |
+| 2026-03-16 | Phase 4 | Added benchmark evals, trace-based scoring, a headless runtime path, and eval-run analysis. |

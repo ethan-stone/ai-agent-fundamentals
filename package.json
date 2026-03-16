@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "repl-agent": "bun run src/repl-agent.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "evals": "bun run src/evals.ts",
+    "analyze-evals": "bun run src/analyze-evals.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

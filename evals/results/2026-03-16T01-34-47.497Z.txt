@@ -1,0 +1,10 @@
+Evaluation run: 2026-03-16T01:34:47.497Z
+Model: us.amazon.nova-2-lite-v1:0
+Region: us-east-1
+Passed 4/5 tasks
+
+PASS current-time | tools=getCurrentDateTime | iterations=2 | trace=2026-03-16T01-34-29.387Z.jsonl
+PASS workspace-root | tools=getWorkingDirectory | iterations=2 | trace=2026-03-16T01-34-31.751Z.jsonl
+PASS repo-listing | tools=getWorkingDirectory, listDirectory | iterations=3 | trace=2026-03-16T01-34-33.595Z.jsonl
+PASS read-package-json | tools=getWorkingDirectory, readTextFile | iterations=3 | trace=2026-03-16T01-34-36.432Z.jsonl
+FAIL find-schema-tools | tools=getWorkingDirectory, listDirectory, listDirectory, searchFiles, readTextFile, readTextFile, readTextFile | iterations=8 | trace=2026-03-16T01-34-39.605Z.jsonl

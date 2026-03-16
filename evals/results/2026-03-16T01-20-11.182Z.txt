@@ -1,0 +1,8 @@
+Evaluation run: 2026-03-16T01:20:11.181Z
+Passed 4/5 tasks
+
+PASS current-time | tools=getCurrentDateTime | iterations=2 | trace=2026-03-16T01-19-55.417Z.jsonl
+PASS workspace-root | tools=getWorkingDirectory | iterations=2 | trace=2026-03-16T01-19-57.880Z.jsonl
+PASS repo-listing | tools=getWorkingDirectory, listDirectory | iterations=3 | trace=2026-03-16T01-19-59.919Z.jsonl
+PASS read-package-json | tools=getWorkingDirectory, readTextFile | iterations=3 | trace=2026-03-16T01-20-02.964Z.jsonl
+FAIL find-schema-tools | tools=getWorkingDirectory, listDirectory, listDirectory, readTextFile | iterations=5 | trace=2026-03-16T01-20-06.224Z.jsonl
