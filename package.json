@@ -1,6 +1,6 @@
 {
   "name": "ai-agent-fundamentals",
-  "module": "index.ts",
+  "module": "src/repl-agent.ts",
   "type": "module",
   "private": true,
   "scripts": {

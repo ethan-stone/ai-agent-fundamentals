@@ -8,17 +8,14 @@ import {
   type ToolUseBlock,
 } from "@aws-sdk/client-bedrock-runtime";
 import { fromIni } from "@aws-sdk/credential-providers";
-import { appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { access, appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 
-const MODEL_ID = "us.amazon.nova-2-lite-v1:0";
-const AWS_PROFILE = "personal-admin";
-const AWS_REGION = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "us-east-1";
 const WORKSPACE_ROOT = process.cwd();
 const TRACE_DIR = resolve(WORKSPACE_ROOT, "traces");
-const MAX_AGENT_ITERATIONS = 8;
+const ENV_FILE_PATH = resolve(WORKSPACE_ROOT, ".env");
 const MAX_FILE_BYTES = 16_000;
 const MAX_TRACE_TEXT_LENGTH = 4_000;
 const SYSTEM_PROMPT =
@@ -26,6 +23,78 @@ const SYSTEM_PROMPT =
 Use tools when they would improve accuracy.
 When answering questions about local files, prefer inspecting the workspace instead of guessing.
 Be concise, explicit about assumptions, and focus on the next useful step.`;
+
+type RuntimeConfig = {
+  modelId: string;
+  awsProfile: string;
+  awsRegion: string;
+  maxAgentIterations: number;
+};
+
+function getOptionalEnvironmentValue(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value ? value : undefined;
+}
+
+function getRequiredEnvironmentValue(name: string): string {
+  const value = getOptionalEnvironmentValue(name);
+
+  if (!value) {
+    throw new Error(`${name} is required. Set it in the repo .env file or your environment.`);
+  }
+
+  return value;
+}
+
+async function assertLocalEnvFileExists(): Promise<void> {
+  try {
+    await access(ENV_FILE_PATH);
+  } catch {
+    throw new Error(`Missing required repo env file at ${ENV_FILE_PATH}.`);
+  }
+}
+
+function getPositiveIntegerEnvironmentValue(name: string, fallback: number): number {
+  const rawValue = getOptionalEnvironmentValue(name);
+
+  if (!rawValue) {
+    if (Number.isNaN(fallback)) {
+      throw new Error(`${name} is required. Set it in the repo .env file or your environment.`);
+    }
+
+    return fallback;
+  }
+
+  const parsedValue = Number.parseInt(rawValue, 10);
+
+  if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+    throw new Error(`${name} must be a positive integer. Received: ${rawValue}`);
+  }
+
+  return parsedValue;
+}
+
+function getRuntimeConfig(): RuntimeConfig {
+  const awsRegion =
+    getOptionalEnvironmentValue("AWS_REGION")
+    ?? getOptionalEnvironmentValue("AWS_DEFAULT_REGION");
+
+  if (!awsRegion) {
+    throw new Error("AWS_REGION is required. Set it in the repo .env file or your environment.");
+  }
+
+  return {
+    modelId: getRequiredEnvironmentValue("AGENT_MODEL_ID"),
+    awsProfile: getRequiredEnvironmentValue("AWS_PROFILE"),
+    awsRegion,
+    maxAgentIterations: getPositiveIntegerEnvironmentValue(
+      "MAX_AGENT_ITERATIONS",
+      Number.NaN,
+    ),
+  };
+}
+
+const runtimeConfig = getRuntimeConfig();
 const TOOLS: Tool[] = [
   {
     toolSpec: {
@@ -94,8 +163,8 @@ const TOOLS: Tool[] = [
 ];
 
 const client = new BedrockRuntimeClient({
-  region: AWS_REGION,
-  credentials: fromIni({ profile: AWS_PROFILE }),
+  region: runtimeConfig.awsRegion,
+  credentials: fromIni({ profile: runtimeConfig.awsProfile }),
 });
 
 type TraceEvent = {
@@ -221,7 +290,7 @@ function resolveWorkspacePath(target = "."): string {
 async function sendConversation(messages: Message[]) {
   return client.send(
     new ConverseCommand({
-      modelId: MODEL_ID,
+      modelId: runtimeConfig.modelId,
       system: [{ text: SYSTEM_PROMPT }],
       messages,
       toolConfig: {
@@ -327,7 +396,7 @@ function isToolUseBlock(block: ContentBlock): block is ContentBlock & { toolUse:
 }
 
 async function runModelTurn(messages: Message[], traceWriter: TraceWriter): Promise<string> {
-    for (let iteration = 0; iteration < MAX_AGENT_ITERATIONS; iteration += 1) {
+    for (let iteration = 0; iteration < runtimeConfig.maxAgentIterations; iteration += 1) {
       const response = await sendConversation(messages);
       const assistantMessage = response.output?.message;
 
@@ -397,26 +466,30 @@ async function runModelTurn(messages: Message[], traceWriter: TraceWriter): Prom
       }
     }
 
-    throw new Error(`Agent exceeded the max tool loop count of ${MAX_AGENT_ITERATIONS}.`);
+    throw new Error(`Agent exceeded the max tool loop count of ${runtimeConfig.maxAgentIterations}.`);
   }
 
   async function main() {
+    await assertLocalEnvFileExists();
+
     const rl = createInterface({ input, output });
     const messages: Message[] = [];
     const traceWriter = await createTraceWriter();
 
-    console.log(`Model: ${MODEL_ID}`);
-    console.log(`AWS profile: ${AWS_PROFILE}`);
-    console.log(`AWS region: ${AWS_REGION}`);
+    console.log(`Model: ${runtimeConfig.modelId}`);
+    console.log(`AWS profile: ${runtimeConfig.awsProfile}`);
+    console.log(`AWS region: ${runtimeConfig.awsRegion}`);
+    console.log(`Env file: ${ENV_FILE_PATH}`);
     console.log(`Workspace: ${WORKSPACE_ROOT}`);
     console.log(`Trace file: ${traceWriter.filePath}`);
     console.log("Commands: /exit, /clear");
     await traceWriter.logEvent({
       type: "session_started",
       data: {
-        modelId: MODEL_ID,
-        awsProfile: AWS_PROFILE,
-        awsRegion: AWS_REGION,
+        modelId: runtimeConfig.modelId,
+        awsProfile: runtimeConfig.awsProfile,
+        awsRegion: runtimeConfig.awsRegion,
+        envFile: ENV_FILE_PATH,
         workspaceRoot: WORKSPACE_ROOT,
         traceFile: traceWriter.filePath,
       },
@@ -474,5 +547,6 @@ async function runModelTurn(messages: Message[], traceWriter: TraceWriter): Prom
   main().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`\nAgent loop failed: ${message}`);
+    console.error("Check .env, AWS_PROFILE, AWS_REGION/AWS_DEFAULT_REGION, AGENT_MODEL_ID, and MAX_AGENT_ITERATIONS.");
     process.exitCode = 1;
   });
