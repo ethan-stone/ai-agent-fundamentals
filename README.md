@@ -93,6 +93,27 @@ If any required value is missing, the agent exits at startup.
 bun run repl-agent
 ```
 
+## Run With Strands
+
+```bash
+bun run strands-repl-agent
+```
+
+The Strands version uses:
+
+- `SessionManager` for native Strands session persistence
+- `S3Storage` backed by the S3 bucket configured for this repo
+- `SlidingWindowConversationManager` for model-facing conversation trimming
+- the same local workspace tools as the hand-rolled agent
+
+Optional env vars for the Strands entrypoint:
+
+- `STRANDS_SESSION_BUCKET`
+- `STRANDS_SESSION_PREFIX`
+- `STRANDS_SESSION_ID`
+
+If `STRANDS_SESSION_ID` is not set, the Strands REPL creates a fresh random session ID on each startup.
+
 On startup, the agent fails fast if:
 
 - the repo `.env` file is missing
