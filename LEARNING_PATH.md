@@ -132,7 +132,7 @@ Introduce controlled mutation so the repo can demonstrate real agent actions, no
 
 ## Phase 4: Improve Observability and Evaluation
 
-Status: `Not Started`
+Status: `In Progress`
 
 ### Goal
 
@@ -164,7 +164,7 @@ Move from “demo works once” to “behavior is measurable.”
 
 ## Phase 5: Introduce Planning
 
-Status: `Not Started`
+Status: `In Progress`
 
 ### Goal
 
@@ -216,9 +216,10 @@ Teach how agents handle long-running tasks and finite context windows.
 
 ### Suggested Tasks
 
-- [ ] Add automatic conversation summarization after a threshold.
-- [ ] Preserve important tool results while dropping low-value turns.
-- [ ] Document tradeoffs between cost, recall, and accuracy.
+- [x] Add automatic conversation summarization after a threshold.
+- [x] Preserve important tool results while dropping low-value turns.
+- [x] Introduce a session-based memory adapter with durable storage.
+- [x] Document tradeoffs between cost, recall, and accuracy.
 - [ ] Create a long-session test case.
 
 ### Exit Criteria

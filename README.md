@@ -14,6 +14,20 @@ bun install
 bun test
 ```
 
+## Database
+
+Generate a new migration after changing the schema:
+
+```bash
+bun run db:generate
+```
+
+Apply migrations to the local SQLite database:
+
+```bash
+bun run db:migrate
+```
+
 ## Evals
 
 ```bash
@@ -90,7 +104,11 @@ The current entrypoint is a minimal Bedrock-backed agent loop:
 - Reads AWS credentials from `AWS_PROFILE`.
 - Uses the Bedrock model from `AGENT_MODEL_ID`.
 - Uses `AWS_REGION` or `AWS_DEFAULT_REGION`, and falls back to `us-east-1`.
-- Keeps conversation history in memory for the current REPL session.
+- Stores session memory in SQLite through a pluggable memory adapter.
+- Persists durable session state through a pluggable session store.
+- Uses a conversation manager to decide which messages are sent back to the model.
+- Associates each conversation with a `sessionId`.
+- Uses rolling summary compaction once the active message window gets too large.
 - Repeats Bedrock tool calls until the model returns a normal assistant response.
 - Writes a structured timeline trace for each session under `traces/*.jsonl`.
 
@@ -121,9 +139,54 @@ The eval analysis layer summarizes recurring failure patterns across runs, inclu
 - most common failing tasks
 - breakdowns by model
 
+## Memory
+
+The runtime now separates session storage from conversation management:
+
+- Session state is stored by `sessionId` in SQLite at `data/agent-memory.sqlite`.
+- The runtime depends on a session-store interface, so the backing store can be swapped later.
+- Full session history is retained in a transcript table, even after compaction.
+- Older conversation turns are summarized into a compact running memory.
+- Recent turns are kept verbatim in working memory storage.
+- A conversation manager chooses the selective slice of recent raw messages sent back to the model on each turn.
+- Compaction decisions are written to the trace as `memory_compacted` events.
+
+This is a practical tradeoff between retaining task context and avoiding unbounded conversation growth. In production, this distinction matters:
+
+- stored history is the durable session transcript
+- summary memory preserves older high-value context
+- working memory is the compact session state used to continue the conversation efficiently
+- the model context is only the recent subset that is most useful for the current turn
+
+This mirrors a common production split:
+
+- session management answers: "what happened in this session?"
+- conversation management answers: "what should the model see on this turn?"
+
+As a rule of thumb, the most useful messages to keep verbatim are:
+
+- the newest user requests
+- the newest assistant/tool exchange that explains current progress
+- recent tool results the model may need to reference directly
+
+The least useful messages to keep verbatim are usually:
+
+- old acknowledgements or filler responses
+- stale exploration steps that have already been summarized
+- old tool output that no longer affects the current task
+
+For this learning repo, the compaction thresholds are intentionally small so the behavior is easy to observe during normal use. In practice, you would usually compact less aggressively and base the decision on context-window pressure rather than a tiny fixed message count.
+
+In production, a more typical approach would be:
+
+- trigger compaction from estimated token usage, not just raw message count
+- preserve the latest user request, active constraints, and recent tool results verbatim
+- summarize older exploration and resolved steps once they become background context
+- compact before prompt size starts to crowd out the current task or meaningfully increase cost and latency
+
 ## REPL Commands
 
-- `/clear` resets the in-memory conversation history.
+- `/clear` clears the stored memory for the current session.
 - `/exit` quits the loop.
 
 ## Tracing

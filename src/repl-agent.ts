@@ -17,6 +17,8 @@ async function main() {
   const traceFile = await agent.getTraceFilePath();
 
   console.log(`Model: ${config.modelId}`);
+  console.log(`Session: ${agent.getSessionId()}`);
+  console.log(`Session store: ${agent.getSessionStoreLabel()}`);
   console.log(`AWS profile: ${config.awsProfile}`);
   console.log(`AWS region: ${config.awsRegion}`);
   console.log(`Workspace: ${process.cwd()}`);

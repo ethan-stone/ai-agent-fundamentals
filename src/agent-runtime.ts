@@ -3,11 +3,11 @@ import {
   ConverseCommand,
   type ContentBlock,
   type Message,
-  type Tool,
   type ToolResultBlock,
   type ToolUseBlock,
 } from "@aws-sdk/client-bedrock-runtime";
 import { fromIni } from "@aws-sdk/credential-providers";
+import { randomUUID } from "node:crypto";
 import { access, appendFile, mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { execFile } from "node:child_process";
@@ -23,6 +23,15 @@ import {
   runtimeConfigSchema,
   searchFilesInputSchema,
 } from "./agent-schemas";
+import {
+  SlidingWindowConversationManager,
+  type ConversationManager,
+} from "./conversation-manager";
+import {
+  createSqliteSessionStore,
+  type SessionRecord,
+  type SessionStore,
+} from "./session-store";
 import { defineTool, parseWithSchema, type ToolDefinition } from "./tooling";
 
 const WORKSPACE_ROOT = process.cwd();
@@ -55,6 +64,7 @@ export type TraceEvent = {
   | "tool_result"
   | "assistant_message"
   | "conversation_cleared"
+  | "memory_compacted"
   | "error";
   iteration?: number;
   data: Record<string, unknown>;
@@ -73,6 +83,10 @@ export type AgentRunResult = {
 };
 
 export type AgentRuntimeOptions = {
+  sessionId?: string;
+  sessionStore?: SessionStore;
+  memoryStore?: SessionStore;
+  conversationManager?: ConversationManager;
   onToolRequest?: (name: string, input: Record<string, unknown>) => void;
   onToolResult?: (name: string, result: string) => void;
 };
@@ -146,10 +160,12 @@ function summarizeContentBlocks(content: ContentBlock[] | undefined) {
   });
 }
 
-async function createTraceWriter(): Promise<TraceWriter> {
-  const startedAt = new Date();
-  const sessionId = startedAt.toISOString().replaceAll(":", "-");
-  const filePath = join(TRACE_DIR, `${sessionId}.jsonl`);
+function getTimestampLabel() {
+  return new Date().toISOString().replaceAll(":", "-");
+}
+
+async function createTraceWriter(sessionId: string): Promise<TraceWriter> {
+  const filePath = join(TRACE_DIR, `${getTimestampLabel()}-${sessionId}.jsonl`);
 
   await mkdir(TRACE_DIR, { recursive: true });
 
@@ -395,8 +411,10 @@ function isToolUseBlock(block: ContentBlock): block is ContentBlock & { toolUse:
 export class AgentRuntime {
   private readonly runtimeConfig: RuntimeConfig;
   private readonly client: BedrockRuntimeClient;
-  private readonly messages: Message[] = [];
-  private traceWriterPromise: Promise<TraceWriter>;
+  private readonly sessionId: string;
+  private readonly sessionStore: SessionStore;
+  private readonly conversationManager: ConversationManager;
+  private readonly traceWriterPromise: Promise<TraceWriter>;
   private readonly options: AgentRuntimeOptions;
 
   constructor(options: AgentRuntimeOptions = {}) {
@@ -405,12 +423,27 @@ export class AgentRuntime {
       region: this.runtimeConfig.awsRegion,
       credentials: fromIni({ profile: this.runtimeConfig.awsProfile }),
     });
-    this.traceWriterPromise = createTraceWriter();
+    this.sessionId = options.sessionId ?? randomUUID();
+    this.sessionStore = (options.sessionStore ?? options.memoryStore) as SessionStore;
+    this.conversationManager = options.conversationManager ?? new SlidingWindowConversationManager();
     this.options = options;
+    this.traceWriterPromise = createTraceWriter(this.sessionId);
   }
 
   getConfig(): RuntimeConfig {
     return this.runtimeConfig;
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  getSessionStoreLabel(): string {
+    return this.sessionStore.getStorageLabel();
+  }
+
+  getMemoryStoreLabel(): string {
+    return this.getSessionStoreLabel();
   }
 
   async getTraceFilePath(): Promise<string> {
@@ -420,26 +453,31 @@ export class AgentRuntime {
 
   async startSession(): Promise<void> {
     await assertLocalEnvFileExists();
+    await this.sessionStore.ensureSession(this.sessionId);
     const traceWriter = await this.traceWriterPromise;
     await traceWriter.logEvent({
       type: "session_started",
       data: {
+        sessionId: this.sessionId,
         modelId: this.runtimeConfig.modelId,
         awsProfile: this.runtimeConfig.awsProfile,
         awsRegion: this.runtimeConfig.awsRegion,
         envFile: ENV_FILE_PATH,
         workspaceRoot: WORKSPACE_ROOT,
+        sessionStore: this.sessionStore.getStorageLabel(),
         traceFile: traceWriter.filePath,
       },
     });
   }
 
   async clearConversation(): Promise<void> {
-    this.messages.length = 0;
+    await this.sessionStore.clearSession(this.sessionId);
     const traceWriter = await this.traceWriterPromise;
     await traceWriter.logEvent({
       type: "conversation_cleared",
-      data: {},
+      data: {
+        sessionId: this.sessionId,
+      },
     });
   }
 
@@ -451,26 +489,30 @@ export class AgentRuntime {
       throw new Error("run requires non-empty input.");
     }
 
-    this.messages.push(createUserMessage(trimmedInput));
+    const session = await this.sessionStore.loadSession(this.sessionId);
+    const userMessage = createUserMessage(trimmedInput);
+    session.messages.push(userMessage);
+    await this.sessionStore.appendMessages(this.sessionId, [userMessage]);
     await traceWriter.logEvent({
       type: "user_message",
       data: {
+        sessionId: this.sessionId,
         text: truncateForTrace(trimmedInput),
       },
     });
 
     try {
-      const assistantText = await this.runModelTurn(traceWriter);
+      const assistantText = await this.runModelTurn(session, traceWriter);
       return {
         assistantText,
         traceFile: traceWriter.filePath,
-        sessionId: traceWriter.sessionId,
+        sessionId: this.sessionId,
       };
     } catch (error) {
-      this.messages.pop();
       await traceWriter.logEvent({
         type: "error",
         data: {
+          sessionId: this.sessionId,
           message: error instanceof Error ? error.message : String(error),
         },
       });
@@ -478,12 +520,20 @@ export class AgentRuntime {
     }
   }
 
-  private async sendConversation(messages: Message[]) {
+  private async sendConversation(session: SessionRecord) {
+    const systemBlocks = [{ text: SYSTEM_PROMPT }];
+
+    if (session.conversationSummary) {
+      systemBlocks.push({
+        text: `Conversation summary of earlier context:\n${session.conversationSummary}`,
+      });
+    }
+
     return this.client.send(
       new ConverseCommand({
         modelId: this.runtimeConfig.modelId,
-        system: [{ text: SYSTEM_PROMPT }],
-        messages,
+        system: systemBlocks,
+        messages: this.conversationManager.selectMessagesForModelContext(session.messages),
         toolConfig: {
           tools: TOOLS,
         },
@@ -512,21 +562,81 @@ export class AgentRuntime {
     return JSON.stringify(await handler(input), null, 2);
   }
 
-  private async runModelTurn(traceWriter: TraceWriter): Promise<string> {
+  private async compactConversationIfNeeded(session: SessionRecord, traceWriter: TraceWriter): Promise<void> {
+    if (!this.conversationManager.shouldCompactConversation(session.messages)) {
+      return;
+    }
+
+    const { messagesToSummarize, messagesToKeep } = this.conversationManager.splitMessagesForCompaction(session.messages);
+    const summarySource = this.conversationManager.formatMessagesForSummary(messagesToSummarize);
+    const summaryPrompt = [
+      "Summarize this prior conversation for future agent turns.",
+      "Retain user goals, important constraints, relevant file paths, tool outcomes, and any unfinished work.",
+      "Be concise and factual.",
+      "",
+      summarySource,
+    ].join("\n");
+
+    const response = await this.client.send(
+      new ConverseCommand({
+        modelId: this.runtimeConfig.modelId,
+        system: [{ text: "You summarize prior agent conversations for context compression." }],
+        messages: [{ role: "user", content: [{ text: summaryPrompt }] }],
+        inferenceConfig: {
+          maxTokens: 400,
+          temperature: 0.2,
+        },
+      }),
+    );
+
+    const summaryText = getTextFromContent(response.output?.message?.content);
+
+    if (!summaryText) {
+      throw new Error("Conversation compaction failed to produce a summary.");
+    }
+
+    session.conversationSummary = session.conversationSummary
+      ? `${session.conversationSummary}\n\n${summaryText}`.trim()
+      : summaryText;
+    session.messages = [...messagesToKeep];
+    await this.sessionStore.replaceSessionMemory(this.sessionId, {
+      conversationSummary: session.conversationSummary,
+      messages: session.messages,
+    });
+
+    await traceWriter.logEvent({
+      type: "memory_compacted",
+      data: {
+        sessionId: this.sessionId,
+        summarizedMessageCount: messagesToSummarize.length,
+        keptMessageCount: messagesToKeep.length,
+        storedMessageCount: session.messages.length,
+        modelContextMessageCount: this.conversationManager.selectMessagesForModelContext(session.messages).length,
+        summaryText: truncateForTrace(session.conversationSummary),
+      },
+    });
+  }
+
+  private async runModelTurn(session: SessionRecord, traceWriter: TraceWriter): Promise<string> {
     for (let iteration = 0; iteration < this.runtimeConfig.maxAgentIterations; iteration += 1) {
-      const response = await this.sendConversation(this.messages);
+      await this.compactConversationIfNeeded(session, traceWriter);
+      const response = await this.sendConversation(session);
       const assistantMessage = response.output?.message;
 
       if (!assistantMessage || assistantMessage.role !== "assistant") {
         throw new Error("Bedrock did not return an assistant message.");
       }
 
-      this.messages.push(assistantMessage);
+      session.messages.push(assistantMessage);
+      await this.sessionStore.appendMessages(this.sessionId, [assistantMessage]);
       await traceWriter.logEvent({
         type: "model_response",
         iteration: iteration + 1,
         data: {
+          sessionId: this.sessionId,
           stopReason: response.stopReason ?? "unknown",
+          storedMessageCount: session.messages.length,
+          modelContextMessageCount: this.conversationManager.selectMessagesForModelContext(session.messages).length,
           content: summarizeContentBlocks(assistantMessage.content),
         },
       });
@@ -537,6 +647,7 @@ export class AgentRuntime {
           type: "assistant_message",
           iteration: iteration + 1,
           data: {
+            sessionId: this.sessionId,
             text: truncateForTrace(assistantText),
           },
         });
@@ -562,6 +673,7 @@ export class AgentRuntime {
           type: "tool_request",
           iteration: iteration + 1,
           data: {
+            sessionId: this.sessionId,
             name: toolUse.name,
             toolUseId: toolUse.toolUseId,
             input: toolInput,
@@ -574,12 +686,15 @@ export class AgentRuntime {
           type: "tool_result",
           iteration: iteration + 1,
           data: {
+            sessionId: this.sessionId,
             name: toolUse.name,
             toolUseId: toolUse.toolUseId,
             result: truncateForTrace(result),
           },
         });
-        this.messages.push(createToolResultMessage(toolUse.toolUseId, result));
+        const toolResultMessage = createToolResultMessage(toolUse.toolUseId, result);
+        session.messages.push(toolResultMessage);
+        await this.sessionStore.appendMessages(this.sessionId, [toolResultMessage]);
       }
     }
 
@@ -588,7 +703,11 @@ export class AgentRuntime {
 }
 
 export async function createAgentRuntime(options: AgentRuntimeOptions = {}): Promise<AgentRuntime> {
-  const runtime = new AgentRuntime(options);
+  const sessionStore = options.sessionStore ?? options.memoryStore ?? await createSqliteSessionStore();
+  const runtime = new AgentRuntime({
+    ...options,
+    sessionStore,
+  });
   await runtime.startSession();
   return runtime;
 }
