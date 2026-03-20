@@ -25,6 +25,8 @@ import {
   searchFilesInputSchema,
 } from "./agent-schemas";
 import { BedrockSafeConversationManager } from "./strands-conversation-manager";
+import { CustomS3SnapshotStorage } from "./strands-custom-session-storage";
+import { SqliteSnapshotStorage } from "./strands-sqlite-session-storage";
 import { parseWithSchema } from "./tooling";
 
 const WORKSPACE_ROOT = process.cwd();
@@ -37,6 +39,7 @@ const strandsConfigSchema = runtimeConfigSchema.extend({
   STRANDS_SESSION_BUCKET: z.string().trim().min(1).default(DEFAULT_SESSION_BUCKET),
   STRANDS_SESSION_PREFIX: z.string().trim().min(1).default(DEFAULT_SESSION_PREFIX),
   STRANDS_SESSION_ID: z.string().trim().min(1).optional(),
+  STRANDS_SESSION_STORAGE: z.enum(["native", "custom", "sqlite"]).default("native"),
 });
 
 type StrandsRuntimeConfig = {
@@ -46,6 +49,7 @@ type StrandsRuntimeConfig = {
   sessionBucket: string;
   sessionPrefix: string;
   sessionId: string;
+  sessionStorageType: "native" | "custom" | "sqlite";
 };
 
 function getRuntimeConfig(): StrandsRuntimeConfig {
@@ -58,6 +62,7 @@ function getRuntimeConfig(): StrandsRuntimeConfig {
     sessionBucket: parsedConfig.STRANDS_SESSION_BUCKET,
     sessionPrefix: parsedConfig.STRANDS_SESSION_PREFIX,
     sessionId: parsedConfig.STRANDS_SESSION_ID ?? randomUUID(),
+    sessionStorageType: parsedConfig.STRANDS_SESSION_STORAGE,
   };
 }
 
@@ -271,14 +276,24 @@ function createStrandsAgent(config: StrandsRuntimeConfig) {
     },
   });
 
+  const snapshotStorage = config.sessionStorageType === "custom"
+    ? new CustomS3SnapshotStorage({
+      bucket: config.sessionBucket,
+      prefix: config.sessionPrefix,
+      s3Client,
+    })
+    : config.sessionStorageType === "sqlite"
+    ? new SqliteSnapshotStorage()
+    : new S3Storage({
+      bucket: config.sessionBucket,
+      prefix: config.sessionPrefix,
+      s3Client,
+    });
+
   const sessionManager = new SessionManager({
     sessionId: config.sessionId,
     storage: {
-      snapshot: new S3Storage({
-        bucket: config.sessionBucket,
-        prefix: config.sessionPrefix,
-        s3Client,
-      }),
+      snapshot: snapshotStorage,
     },
   });
 
@@ -296,8 +311,8 @@ function createStrandsAgent(config: StrandsRuntimeConfig) {
 Use tools when they would improve accuracy.
 When answering questions about local files, prefer inspecting the workspace instead of guessing.
 Be concise, explicit about assumptions, and focus on the next useful step.`,
-    sessionManager,
     conversationManager,
+    sessionManager,
   });
 
   return {
@@ -319,7 +334,12 @@ async function main() {
 
   console.log(`Model: ${config.modelId}`);
   console.log(`Session: ${config.sessionId}`);
-  console.log(`Session store: s3://${config.sessionBucket}/${config.sessionPrefix}`);
+  console.log(
+    config.sessionStorageType === "sqlite"
+      ? "Session store: sqlite:data/agent-memory.sqlite"
+      : `Session store: s3://${config.sessionBucket}/${config.sessionPrefix}`,
+  );
+  console.log(`Session storage: ${config.sessionStorageType}`);
   console.log(`AWS profile: ${config.awsProfile}`);
   console.log(`AWS region: ${config.awsRegion}`);
   console.log(`Workspace: ${process.cwd()}`);
