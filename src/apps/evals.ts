@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { createAgentRuntime, type RuntimeConfig, type TraceEvent } from "./agent-runtime";
+import { createAgentRuntime, type RuntimeConfig, type TraceEvent } from "../lib/custom";
 
 type EvalTask = {
   id: string;

@@ -1,16 +1,16 @@
 {
   "name": "ai-agent-fundamentals",
-  "module": "src/repl-agent.ts",
+  "module": "src/apps/custom-repl-agent.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "custom-repl-agent": "bun run src/custom-repl-agent.ts",
-    "strands-repl-agent": "bun run src/strands-repl-agent.ts",
+    "custom-repl-agent": "bun run src/apps/custom-repl-agent.ts",
+    "strands-repl-agent": "bun run src/apps/strands-repl-agent.ts",
     "test": "bun test",
-    "evals": "bun run src/evals.ts",
-    "analyze-evals": "bun run src/analyze-evals.ts",
+    "evals": "bun run src/apps/evals.ts",
+    "analyze-evals": "bun run src/apps/analyze-evals.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "bun run src/db/migrate.ts",
+    "db:migrate": "bun run src/lib/db/migrate.ts",
     "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {

@@ -22,7 +22,7 @@ import {
   readTextFileInputSchema,
   runtimeConfigSchema,
   searchFilesInputSchema,
-} from "./agent-schemas";
+} from "../config/agent-schemas";
 import {
   SlidingWindowConversationManager,
   type ConversationManager,
@@ -32,7 +32,7 @@ import {
   type SessionRecord,
   type SessionStore,
 } from "./session-store";
-import { defineTool, parseWithSchema, type ToolDefinition } from "./tooling";
+import { defineTool, parseWithSchema, type ToolDefinition } from "../core/tooling";
 
 const WORKSPACE_ROOT = process.cwd();
 const TRACE_DIR = resolve(WORKSPACE_ROOT, "traces");

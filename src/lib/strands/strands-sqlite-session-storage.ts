@@ -4,12 +4,12 @@ import { Database } from "bun:sqlite";
 import { and, asc, eq, gt } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import type { Snapshot, SnapshotLocation, SnapshotManifest, SnapshotStorage } from "@strands-agents/sdk";
-import { runMigrations } from "./db/migrate";
+import { runMigrations } from "../db/migrate";
 import {
   strandsHistoricalSnapshotsTable,
   strandsLatestSnapshotsTable,
   strandsSnapshotManifestsTable,
-} from "./db/schema";
+} from "../db/schema";
 
 const WORKSPACE_ROOT = process.cwd();
 const DEFAULT_DB_PATH = resolve(WORKSPACE_ROOT, "data", "agent-memory.sqlite");

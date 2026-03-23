@@ -2,6 +2,28 @@
 
 This repo contains a minimal Bedrock-backed REPL agent for learning core AI agent runtime concepts.
 
+## Project Layout
+
+The codebase is organized in two layers:
+
+- `src/lib/` contains reusable library code for agent runtimes, schemas, storage, and conversation management.
+- `src/apps/` contains runnable entrypoints that compose the library into concrete applications.
+
+Current library areas:
+
+- `src/lib/custom/` for the hand-rolled Bedrock agent runtime
+- `src/lib/strands/` for Strands-specific conversation managers and storage backends
+- `src/lib/config/` for shared schemas and runtime config validation
+- `src/lib/core/` for cross-cutting helpers like tool definition/validation
+- `src/lib/db/` for Drizzle schema and migrations
+
+Current app entrypoints:
+
+- `src/apps/custom-repl-agent.ts`
+- `src/apps/strands-repl-agent.ts`
+- `src/apps/evals.ts`
+- `src/apps/analyze-evals.ts`
+
 ## Install
 
 ```bash
@@ -90,7 +112,7 @@ If any required value is missing, the agent exits at startup.
 ## Run
 
 ```bash
-bun run repl-agent
+bun run custom-repl-agent
 ```
 
 ## Run With Strands
@@ -104,6 +126,7 @@ The Strands version uses:
 - `SessionManager` for native Strands session persistence
 - `S3Storage` backed by the S3 bucket configured for this repo
 - `SlidingWindowConversationManager` for model-facing conversation trimming
+- `STRANDS_CONVERSATION_MANAGER=safe|summarizing` to compare a Bedrock-safe trimming manager with a custom summarizing manager in the Strands REPL
 - the same local workspace tools as the hand-rolled agent
 
 Optional env vars for the Strands entrypoint:

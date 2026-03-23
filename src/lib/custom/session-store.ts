@@ -4,8 +4,8 @@ import { Database } from "bun:sqlite";
 import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { asc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
-import { runMigrations } from "./db/migrate";
-import { sessionMessagesTable, sessionTranscriptMessagesTable, sessionsTable } from "./db/schema";
+import { runMigrations } from "../db/migrate";
+import { sessionMessagesTable, sessionTranscriptMessagesTable, sessionsTable } from "../db/schema";
 
 const WORKSPACE_ROOT = process.cwd();
 const DATA_DIR = resolve(WORKSPACE_ROOT, "data");

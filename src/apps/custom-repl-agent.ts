@@ -1,6 +1,6 @@
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
-import { createAgentRuntime } from "./agent-runtime";
+import { createAgentRuntime } from "../lib/custom";
 
 async function main() {
   const agent = await createAgentRuntime({

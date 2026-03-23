@@ -19,15 +19,18 @@ import {
   MAX_FILE_CHUNK_CHARACTERS,
   MAX_SEARCH_RESULTS,
   listDirectoryInputSchema,
+  parseWithSchema,
   readFileChunkInputSchema,
   readTextFileInputSchema,
   runtimeConfigSchema,
   searchFilesInputSchema,
-} from "./agent-schemas";
-import { BedrockSafeConversationManager } from "./strands-conversation-manager";
-import { CustomS3SnapshotStorage } from "./strands-custom-session-storage";
-import { SqliteSnapshotStorage } from "./strands-sqlite-session-storage";
-import { parseWithSchema } from "./tooling";
+} from "../lib";
+import {
+  BedrockSafeConversationManager,
+  CustomS3SnapshotStorage,
+  SqliteSnapshotStorage,
+  StrandsSummarizingConversationManager,
+} from "../lib/strands";
 
 const WORKSPACE_ROOT = process.cwd();
 const MAX_FILE_BYTES = 16_000;
@@ -40,6 +43,7 @@ const strandsConfigSchema = runtimeConfigSchema.extend({
   STRANDS_SESSION_PREFIX: z.string().trim().min(1).default(DEFAULT_SESSION_PREFIX),
   STRANDS_SESSION_ID: z.string().trim().min(1).optional(),
   STRANDS_SESSION_STORAGE: z.enum(["native", "custom", "sqlite"]).default("native"),
+  STRANDS_CONVERSATION_MANAGER: z.enum(["safe", "summarizing"]).default("safe"),
 });
 
 type StrandsRuntimeConfig = {
@@ -50,6 +54,7 @@ type StrandsRuntimeConfig = {
   sessionPrefix: string;
   sessionId: string;
   sessionStorageType: "native" | "custom" | "sqlite";
+  conversationManagerType: "safe" | "summarizing";
 };
 
 function getRuntimeConfig(): StrandsRuntimeConfig {
@@ -63,6 +68,7 @@ function getRuntimeConfig(): StrandsRuntimeConfig {
     sessionPrefix: parsedConfig.STRANDS_SESSION_PREFIX,
     sessionId: parsedConfig.STRANDS_SESSION_ID ?? randomUUID(),
     sessionStorageType: parsedConfig.STRANDS_SESSION_STORAGE,
+    conversationManagerType: parsedConfig.STRANDS_CONVERSATION_MANAGER,
   };
 }
 
@@ -297,10 +303,18 @@ function createStrandsAgent(config: StrandsRuntimeConfig) {
     },
   });
 
-  const conversationManager = new BedrockSafeConversationManager({
-    windowSize: 12,
-    shouldTruncateResults: true,
-  });
+  const conversationManager = config.conversationManagerType === "summarizing"
+    ? new StrandsSummarizingConversationManager({
+      summaryTriggerMessages: 16,
+      summaryRatio: 0.35,
+      preserveRecentMessages: 8,
+      fallbackWindowSize: 12,
+      shouldTruncateResults: true,
+    })
+    : new BedrockSafeConversationManager({
+      windowSize: 12,
+      shouldTruncateResults: true,
+    });
 
   const agent = new Agent({
     name: "Strands REPL Agent",
@@ -340,6 +354,7 @@ async function main() {
       : `Session store: s3://${config.sessionBucket}/${config.sessionPrefix}`,
   );
   console.log(`Session storage: ${config.sessionStorageType}`);
+  console.log(`Conversation manager: ${config.conversationManagerType}`);
   console.log(`AWS profile: ${config.awsProfile}`);
   console.log(`AWS region: ${config.awsRegion}`);
   console.log(`Workspace: ${process.cwd()}`);
