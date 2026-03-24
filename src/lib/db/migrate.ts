@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { migrate } from "drizzle-orm/bun-sqlite/migrator";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 
 const WORKSPACE_ROOT = process.cwd();
@@ -10,19 +10,19 @@ const DB_PATH = resolve(WORKSPACE_ROOT, "data", "agent-memory.sqlite");
 const MIGRATIONS_FOLDER = resolve(WORKSPACE_ROOT, "drizzle");
 const MIGRATIONS_TABLE = "__drizzle_migrations";
 
-function hasLegacyMemoryTables(sqlite: Database): boolean {
-  const rows = sqlite.query<{ name: string }, []>(`
+async function hasLegacyMemoryTables(client: ReturnType<typeof createClient>): Promise<boolean> {
+  const result = await client.execute(`
     SELECT name
     FROM sqlite_master
     WHERE type = 'table'
       AND name IN ('agent_sessions', 'session_messages')
-  `).all();
+  `);
 
-  return rows.length === 2;
+  return result.rows.length === 2;
 }
 
-function getAppliedMigrationCount(sqlite: Database): number {
-  sqlite.run(`
+async function getAppliedMigrationCount(client: ReturnType<typeof createClient>): Promise<number> {
+  await client.execute(`
     CREATE TABLE IF NOT EXISTS "${MIGRATIONS_TABLE}" (
       id SERIAL PRIMARY KEY,
       hash text NOT NULL,
@@ -30,16 +30,17 @@ function getAppliedMigrationCount(sqlite: Database): number {
     )
   `);
 
-  const row = sqlite.query<{ count: number }, []>(`SELECT COUNT(*) as count FROM "${MIGRATIONS_TABLE}"`).get();
+  const result = await client.execute(`SELECT COUNT(*) as count FROM "${MIGRATIONS_TABLE}"`);
+  const row = result.rows[0] as { count?: number | string } | undefined;
   return Number(row?.count ?? 0);
 }
 
-function baselineLegacyDatabase(sqlite: Database): void {
-  if (!hasLegacyMemoryTables(sqlite)) {
+async function baselineLegacyDatabase(client: ReturnType<typeof createClient>): Promise<void> {
+  if (!await hasLegacyMemoryTables(client)) {
     return;
   }
 
-  if (getAppliedMigrationCount(sqlite) > 0) {
+  if (await getAppliedMigrationCount(client) > 0) {
     return;
   }
 
@@ -50,24 +51,27 @@ function baselineLegacyDatabase(sqlite: Database): void {
     return;
   }
 
-  sqlite.query(`
+  await client.execute({
+    sql: `
     INSERT INTO "${MIGRATIONS_TABLE}" ("hash", "created_at")
     VALUES (?, ?)
-  `).run(latestMigration.hash, latestMigration.folderMillis);
+  `,
+    args: [latestMigration.hash, latestMigration.folderMillis],
+  });
 }
 
 export async function runMigrations(dbPath = DB_PATH): Promise<void> {
   await mkdir(dirname(dbPath), { recursive: true });
 
-  const sqlite = new Database(dbPath, { create: true });
-  sqlite.run("PRAGMA foreign_keys = ON;");
+  const client = createClient({ url: `file:${dbPath}` });
+  await client.execute("PRAGMA foreign_keys = ON;");
 
   try {
-    baselineLegacyDatabase(sqlite);
-    const db = drizzle(sqlite);
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    await baselineLegacyDatabase(client);
+    const db = drizzle(client);
+    await migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
   } finally {
-    sqlite.close();
+    client.close();
   }
 }
 

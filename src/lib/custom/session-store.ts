@@ -1,9 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { Database } from "bun:sqlite";
+import { createClient, type Client } from "@libsql/client";
 import type { Message } from "@aws-sdk/client-bedrock-runtime";
 import { asc, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { drizzle } from "drizzle-orm/libsql";
 import { runMigrations } from "../db/migrate";
 import { sessionMessagesTable, sessionTranscriptMessagesTable, sessionsTable } from "../db/schema";
 
@@ -50,14 +50,13 @@ function deserializeMessage(payloadJson: string): Message {
 }
 
 export class SqliteSessionStore implements SessionStore {
-  private readonly sqlite: Database;
+  private readonly client: Client;
   private readonly db;
   private initialized = false;
 
   constructor(private readonly dbPath: string = DEFAULT_DB_PATH) {
-    this.sqlite = new Database(dbPath, { create: true });
-    this.sqlite.run("PRAGMA foreign_keys = ON;");
-    this.db = drizzle(this.sqlite);
+    this.client = createClient({ url: `file:${dbPath}` });
+    this.db = drizzle(this.client);
   }
 
   async initialize(): Promise<void> {
@@ -66,6 +65,7 @@ export class SqliteSessionStore implements SessionStore {
     }
 
     await mkdir(dirname(this.dbPath), { recursive: true });
+    await this.client.execute("PRAGMA foreign_keys = ON;");
     await runMigrations(this.dbPath);
     this.initialized = true;
   }
@@ -73,7 +73,7 @@ export class SqliteSessionStore implements SessionStore {
   async ensureSession(sessionId: string): Promise<void> {
     await this.initialize();
 
-    const existing = this.db
+    const existing = await this.db
       .select()
       .from(sessionsTable)
       .where(eq(sessionsTable.id, sessionId))
@@ -95,7 +95,7 @@ export class SqliteSessionStore implements SessionStore {
   async loadSession(sessionId: string): Promise<SessionRecord> {
     await this.ensureSession(sessionId);
 
-    const session = this.db
+    const session = await this.db
       .select()
       .from(sessionsTable)
       .where(eq(sessionsTable.id, sessionId))
@@ -105,14 +105,14 @@ export class SqliteSessionStore implements SessionStore {
       throw new Error(`Session ${sessionId} was not found.`);
     }
 
-    const rows = this.db
+    const rows = await this.db
       .select()
       .from(sessionMessagesTable)
       .where(eq(sessionMessagesTable.sessionId, sessionId))
       .orderBy(asc(sessionMessagesTable.id))
       .all();
 
-    const transcriptRows = this.db
+    const transcriptRows = await this.db
       .select()
       .from(sessionTranscriptMessagesTable)
       .where(eq(sessionTranscriptMessagesTable.sessionId, sessionId))
@@ -133,7 +133,7 @@ export class SqliteSessionStore implements SessionStore {
   async loadTranscript(sessionId: string): Promise<Message[]> {
     await this.ensureSession(sessionId);
 
-    const rows = this.db
+    const rows = await this.db
       .select()
       .from(sessionTranscriptMessagesTable)
       .where(eq(sessionTranscriptMessagesTable.sessionId, sessionId))
@@ -151,76 +151,76 @@ export class SqliteSessionStore implements SessionStore {
     await this.ensureSession(sessionId);
     const now = getIsoTimestamp();
 
-    this.sqlite.transaction(() => {
-      this.db.insert(sessionMessagesTable).values(
+    await this.db.transaction(async (tx) => {
+      await tx.insert(sessionMessagesTable).values(
         messages.map((message) => ({
           sessionId,
           payloadJson: serializeMessage(message),
           createdAt: now,
         })),
-      ).run();
-      this.db.insert(sessionTranscriptMessagesTable).values(
+      );
+      await tx.insert(sessionTranscriptMessagesTable).values(
         messages.map((message) => ({
           sessionId,
           payloadJson: serializeMessage(message),
           createdAt: now,
         })),
-      ).run();
-      this.db.update(sessionsTable)
+      );
+      await tx.update(sessionsTable)
         .set({ updatedAt: now })
         .where(eq(sessionsTable.id, sessionId))
         .run();
-    })();
+    });
   }
 
   async replaceSessionMemory(sessionId: string, input: ReplaceSessionMemoryInput): Promise<void> {
     await this.ensureSession(sessionId);
     const now = getIsoTimestamp();
 
-    this.sqlite.transaction(() => {
-      this.db.delete(sessionMessagesTable)
+    await this.db.transaction(async (tx) => {
+      await tx.delete(sessionMessagesTable)
         .where(eq(sessionMessagesTable.sessionId, sessionId))
         .run();
 
       if (input.messages.length > 0) {
-        this.db.insert(sessionMessagesTable).values(
+        await tx.insert(sessionMessagesTable).values(
           input.messages.map((message) => ({
             sessionId,
             payloadJson: serializeMessage(message),
             createdAt: now,
           })),
-        ).run();
+        );
       }
 
-      this.db.update(sessionsTable)
+      await tx.update(sessionsTable)
         .set({
           conversationSummary: input.conversationSummary,
           updatedAt: now,
         })
         .where(eq(sessionsTable.id, sessionId))
         .run();
-    })();
+    });
   }
 
   async clearSession(sessionId: string): Promise<void> {
     await this.ensureSession(sessionId);
     const now = getIsoTimestamp();
 
-    this.sqlite.transaction(() => {
-      this.db.delete(sessionMessagesTable)
+    await this.db.transaction(async (tx) => {
+      await tx.delete(sessionMessagesTable)
         .where(eq(sessionMessagesTable.sessionId, sessionId))
         .run();
-      this.db.delete(sessionTranscriptMessagesTable)
+      await tx.delete(sessionTranscriptMessagesTable)
         .where(eq(sessionTranscriptMessagesTable.sessionId, sessionId))
         .run();
-      this.db.update(sessionsTable)
+      await tx.update(sessionsTable)
         .set({
           conversationSummary: "",
           updatedAt: now,
         })
         .where(eq(sessionsTable.id, sessionId))
         .run();
-    })();
+    });
   }
 
   getStorageLabel(): string {

@@ -121,6 +121,18 @@ bun run custom-repl-agent
 bun run strands-repl-agent
 ```
 
+## Run With Strands Multi-Agent
+
+```bash
+bun run strands-multi-agent-repl
+```
+
+This entrypoint uses the agents-as-tools pattern:
+
+- `orchestrator` talks to the user and decides when to delegate
+- `repo_researcher` inspects the local codebase and returns evidence-backed findings
+- `critic` reviews draft answers for weak claims and omissions
+
 The Strands version uses:
 
 - `SessionManager` for native Strands session persistence

@@ -1,8 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { Database } from "bun:sqlite";
+import { createClient, type Client } from "@libsql/client";
 import { and, asc, eq, gt } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/bun-sqlite";
+import { drizzle } from "drizzle-orm/libsql";
 import type { Snapshot, SnapshotLocation, SnapshotManifest, SnapshotStorage } from "@strands-agents/sdk";
 import { runMigrations } from "../db/migrate";
 import {
@@ -28,13 +28,13 @@ function getManifestStorageKey(location: SnapshotLocation): string {
 }
 
 export class SqliteSnapshotStorage implements SnapshotStorage {
-  private readonly sqlite: Database;
+  private readonly client: Client;
   private readonly db;
   private initialized = false;
 
   constructor(private readonly dbPath: string = DEFAULT_DB_PATH) {
-    this.sqlite = new Database(dbPath, { create: true });
-    this.db = drizzle(this.sqlite);
+    this.client = createClient({ url: `file:${dbPath}` });
+    this.db = drizzle(this.client);
   }
 
   private async initialize(): Promise<void> {
@@ -43,6 +43,7 @@ export class SqliteSnapshotStorage implements SnapshotStorage {
     }
 
     await mkdir(dirname(this.dbPath), { recursive: true });
+    await this.client.execute("PRAGMA foreign_keys = ON;");
     await runMigrations(this.dbPath);
     this.initialized = true;
   }
@@ -94,7 +95,7 @@ export class SqliteSnapshotStorage implements SnapshotStorage {
     await this.initialize();
 
     if (params.snapshotId === undefined) {
-      const row = this.db.select()
+      const row = await this.db.select()
         .from(strandsLatestSnapshotsTable)
         .where(eq(strandsLatestSnapshotsTable.storageKey, getLatestStorageKey(params.location)))
         .get();
@@ -102,7 +103,7 @@ export class SqliteSnapshotStorage implements SnapshotStorage {
       return row ? JSON.parse(row.snapshotJson) as Snapshot : null;
     }
 
-    const row = this.db.select()
+    const row = await this.db.select()
       .from(strandsHistoricalSnapshotsTable)
       .where(eq(strandsHistoricalSnapshotsTable.storageKey, getHistoricalStorageKey(params.location, params.snapshotId)))
       .get();
@@ -131,8 +132,8 @@ export class SqliteSnapshotStorage implements SnapshotStorage {
       .orderBy(asc(strandsHistoricalSnapshotsTable.snapshotId));
 
     const rows = params.limit !== undefined
-      ? baseQuery.limit(params.limit).all()
-      : baseQuery.all();
+      ? await baseQuery.limit(params.limit).all()
+      : await baseQuery.all();
 
     return rows.map((row) => row.snapshotId);
   }
@@ -140,23 +141,23 @@ export class SqliteSnapshotStorage implements SnapshotStorage {
   async deleteSession(params: { sessionId: string }): Promise<void> {
     await this.initialize();
 
-    this.sqlite.transaction(() => {
-      this.db.delete(strandsLatestSnapshotsTable)
+    await this.db.transaction(async (tx) => {
+      await tx.delete(strandsLatestSnapshotsTable)
         .where(eq(strandsLatestSnapshotsTable.sessionId, params.sessionId))
         .run();
-      this.db.delete(strandsHistoricalSnapshotsTable)
+      await tx.delete(strandsHistoricalSnapshotsTable)
         .where(eq(strandsHistoricalSnapshotsTable.sessionId, params.sessionId))
         .run();
-      this.db.delete(strandsSnapshotManifestsTable)
+      await tx.delete(strandsSnapshotManifestsTable)
         .where(eq(strandsSnapshotManifestsTable.sessionId, params.sessionId))
         .run();
-    })();
+    });
   }
 
   async loadManifest(params: { location: SnapshotLocation }): Promise<SnapshotManifest> {
     await this.initialize();
 
-    const row = this.db.select()
+    const row = await this.db.select()
       .from(strandsSnapshotManifestsTable)
       .where(eq(strandsSnapshotManifestsTable.storageKey, getManifestStorageKey(params.location)))
       .get();
