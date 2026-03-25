@@ -30,6 +30,56 @@ Current app entrypoints:
 bun install
 ```
 
+## Tracing
+
+This repo can export OpenTelemetry traces from the Strands apps.
+
+For AWS CloudWatch/X-Ray, the app should send OTLP to a local collector, and the collector should forward signed requests to AWS. This repo includes a local OpenTelemetry Collector config for that flow.
+
+Start the local observability stack:
+
+```bash
+docker compose up -d
+```
+
+Stop it:
+
+```bash
+docker compose down
+```
+
+Useful endpoints:
+
+- Jaeger UI: `http://localhost:16686`
+- Local collector OTLP/gRPC: `localhost:4317`
+- Local collector OTLP/HTTP: `http://localhost:4318`
+
+Recommended `.env` values for local tracing:
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+OTEL_EXPORTER_OTLP_HEADERS=
+OTEL_SEMCONV_STABILITY_OPT_IN=gen_ai_latest_experimental,gen_ai_tool_definitions
+```
+
+Why this setup exists:
+
+- the Strands app emits OTLP spans locally
+- the collector batches them and signs them with SigV4
+- the collector exports traces to `https://xray.<region>.amazonaws.com/v1/traces`
+
+The collector uses your local AWS profile from `~/.aws`, so make sure:
+
+- `AWS_PROFILE` is set in your shell or `.env`
+- `AWS_REGION` matches the target region
+- your AWS credentials are valid before starting the collector
+
+You can inspect collector logs with:
+
+```bash
+docker compose logs -f otel-collector
+```
+
 ## Test
 
 ```bash

@@ -1,0 +1,31 @@
+services:
+  jaeger:
+    image: jaegertracing/jaeger:2.6.0
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"
+      - "5778:5778"
+      - "9411:9411"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.122.1
+    container_name: otel-collector
+    restart: unless-stopped
+    depends_on:
+      - jaeger
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+    environment:
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_PROFILE: ${AWS_PROFILE:-default}
+      AWS_SDK_LOAD_CONFIG: "1"
+      HOME: /
+      AWS_SHARED_CREDENTIALS_FILE: /.aws/credentials
+      AWS_CONFIG_FILE: /.aws/config
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ${HOME}/.aws:/.aws:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
